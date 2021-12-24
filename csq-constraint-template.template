@@ -1,0 +1,59 @@
+#
+# Constraint Template for TMC / OPA Gatekeeper
+# Implements cluster wide storage quota for PVC
+#
+# V1.1 / 17. Dec 2021 / schmidtst@vmware.com
+#
+fullName:
+  name: TDH_USERclusterstoragequota
+spec:
+  objectType: ConstraintTemplate
+  templateType: OPAGatekeeper
+  object: |-
+    apiVersion: templates.gatekeeper.sh/v1beta1
+    kind: ConstraintTemplate
+    metadata:
+      name: TDH_USERclusterstoragequota
+    spec:
+      crd:
+        spec:
+          names:
+            kind: TDH_USERClusterStorageQuota
+          validation:
+            # Schema for the `parameters` field
+            openAPIV3Schema:
+              properties:
+                storagelimit:
+                  type: string
+                  # Values can inculde common multipliers like 1M, 3Mi, 1.5G and so on
+                  description: "Maximum size of all PVC in the cluster"
+      targets:
+        - target: admission.k8s.gatekeeper.sh
+          rego: |
+            package clusterstoragequota
+    
+            # set of operations we want to check
+            operations = {"CREATE", "UPDATE"}	
+    
+            # storage size of the volume in the request
+            storagesize := units.parse_bytes(input.review.object.spec.resources.requests.storage)
+    
+            # storage size of the existing persistent volume claimes
+            #   with first [_] to iterate over all namespaces and 2nd [_] to iterate over existing pvc's
+            existingsizes := [existingsize | existingsize := units.parse_bytes(data.inventory.namespace[_]["v1"]["PersistentVolumeClaim"][_]["spec"]["resources"]["requests"]["storage"])]
+    
+            # sum up the values
+            totalsize := sum(existingsizes) + storagesize
+    
+            # convert the limit from the constraint to bytes
+            storagelimitsize := units.parse_bytes(input.parameters.storagelimit)
+    
+            # check and throw error if limit exceeded
+            violation[{"msg": msg}] {
+    
+              operations[input.review.operation]	
+    
+              totalsize > storagelimitsize
+    
+              msg := sprintf("Size of all PVCs %v exceeds cluster storage quota %v", [totalsize, storagelimitsize])
+            }
